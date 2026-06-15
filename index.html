@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>RSU & JAMB CBT Practice App</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
 <style>
   :root { --green:#006400;--gold:#FFD700;--dark:#1a1a2e;--card:#16213e;--accent:#0f3460;--text:#e0e0e0;--white:#ffffff;--correct:#28a745;--wrong:#dc3545;--warn:#ffc107;--input-bg:#0d1117;--input-border:#30363d; }
   html[data-theme="light"] { --dark:#f4f5f9;--card:#ffffff;--accent:#e8ecf7;--text:#222232;--white:#1a1a2e;--input-bg:#ffffff;--input-border:#ccc; }
@@ -3573,78 +3573,106 @@ function endQuiz(timeout,antiCheat){
 }
 
 // ============================================================
-// SUPABASE INTEGRATION
+// SUPABASE INTEGRATION — raw fetch (no SDK, works in all browsers)
 // ============================================================
 const SUPABASE_URL='https://ucerqmewibwkxdgtgqvc.supabase.co';
 const SUPABASE_ANON='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVjZXJxbWV3aWJ3a3hkZ3RncXZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1MzM1NDMsImV4cCI6MjA5NzEwOTU0M30.4wB1N229r__yCZo5unB1WVsnMf_Erk_p8aT1MySTgCU';
-const _sb=supabase.createClient(SUPABASE_URL,SUPABASE_ANON);
 
-window._sbUser=null; // current logged-in user row from public.users
+window._sbUser=null;
 
-async function sbGetUserByEmail(email){
-  const{data,error}=await _sb.from('users').select('*').eq('email',email.toLowerCase().trim()).maybeSingle();
-  return{data,error};
-}
-async function sbRegisterUser({name,email,phone,password}){
-  const{data:existing}=await _sb.from('users').select('id').eq('email',email.toLowerCase().trim()).maybeSingle();
-  if(existing)return{error:{message:'Email already registered. Please login instead.'}};
-  const{data,error}=await _sb.from('users').insert([{name,email:email.toLowerCase().trim(),phone,password_hash:password}]).select().single();
-  return{data,error};
-}
-async function sbLoginUser({email,password}){
+// Core fetch helper
+async function sbFetch(path,options={}){
+  const method=options.method||'GET';
+  const headers={
+    'apikey':SUPABASE_ANON,
+    'Authorization':'Bearer '+SUPABASE_ANON,
+    'Content-Type':'application/json',
+    'Accept':'application/json',
+    ...(options.headers||{})
+  };
+  if(options.single) headers['Accept']='application/vnd.pgrst.object+json';
+  if(options.prefer) headers['Prefer']=options.prefer;
   try{
-    const{data,error}=await _sb.from('users').select('*').eq('email',email.toLowerCase().trim()).eq('password_hash',password).maybeSingle();
-    if(error)return{error:{message:'DB error: '+error.message}};
-    if(!data)return{error:{message:'Invalid email or password. Check your details and try again.'}};
+    const res=await fetch(SUPABASE_URL+'/rest/v1/'+path,{method,headers,body:options.body?JSON.stringify(options.body):undefined});
+    const text=await res.text();
+    let data=null;
+    try{data=text?JSON.parse(text):null;}catch(e){data=null;}
+    if(!res.ok){
+      const msg=(data&&(data.message||data.details||data.hint))||('HTTP '+res.status);
+      return{data:null,error:{message:msg}};
+    }
     return{data,error:null};
   }catch(e){
-    return{error:{message:'Network error. Check your internet connection.'}};
+    return{data:null,error:{message:'Network error — check your connection.'}};
   }
 }
+
+// Build query string from filters object
+function sbQ(filters){
+  return Object.entries(filters).map(([k,v])=>k+'=eq.'+encodeURIComponent(v)).join('&');
+}
+
+async function sbLoginUser({email,password}){
+  const em=email.toLowerCase().trim();
+  const{data,error}=await sbFetch('users?select=*&email=eq.'+encodeURIComponent(em)+'&password_hash=eq.'+encodeURIComponent(password));
+  if(error)return{data:null,error};
+  const arr=Array.isArray(data)?data:[];
+  if(!arr.length)return{data:null,error:{message:'Wrong email or password. Please try again.'}};
+  return{data:arr[0],error:null};
+}
+
+async function sbRegisterUser({name,email,phone,password}){
+  const em=email.toLowerCase().trim();
+  // Check existing
+  const{data:check}=await sbFetch('users?select=id&email=eq.'+encodeURIComponent(em));
+  if(check&&Array.isArray(check)&&check.length>0)return{data:null,error:{message:'Email already registered. Please login.'}};
+  // Insert
+  const{data,error}=await sbFetch('users',{
+    method:'POST',
+    prefer:'return=representation',
+    headers:{'Prefer':'return=representation'},
+    body:{name,email:em,phone,password_hash:password}
+  });
+  if(error)return{data:null,error};
+  const arr=Array.isArray(data)?data:[data];
+  return{data:arr[0],error:null};
+}
+
+async function sbInsert(table,row){
+  return sbFetch(table,{method:'POST',prefer:'return=minimal',headers:{'Prefer':'return=minimal'},body:row});
+}
+
 async function sbSaveAttempt({subject,score,total,percent,time_used}){
   if(!window._sbUser)return;
-  await _sb.from('attempts').insert([{
-    user_id:window._sbUser.id,user_name:window._sbUser.name,user_email:window._sbUser.email,
-    subject,score,total,percent,time_used
-  }]);
+  await sbInsert('attempts',{user_id:window._sbUser.id,user_name:window._sbUser.name,user_email:window._sbUser.email,subject,score,total,percent,time_used});
 }
 async function sbSaveJambAttempt(payload){
   if(!window._sbUser)return;
-  await _sb.from('jamb_attempts').insert([{
-    user_id:window._sbUser.id,user_name:window._sbUser.name,user_email:window._sbUser.email,...payload
-  }]);
+  await sbInsert('jamb_attempts',{user_id:window._sbUser.id,user_name:window._sbUser.name,user_email:window._sbUser.email,...payload});
 }
 async function sbSaveDailyScore({score,total,percent,challenge_date}){
   if(!window._sbUser)return;
-  await _sb.from('daily_scores').insert([{
-    user_id:window._sbUser.id,user_name:window._sbUser.name,challenge_date,score,total,percent
-  }]);
+  await sbInsert('daily_scores',{user_id:window._sbUser.id,user_name:window._sbUser.name,challenge_date,score,total,percent});
 }
 async function sbSaveWeeklyChallenge({total_score,percent,challenge_week,challenge_type}){
   if(!window._sbUser)return;
-  // Check if already submitted this week
-  const{data:existing}=await _sb.from('weekly_challenges').select('id').eq('user_id',window._sbUser.id).eq('challenge_week',challenge_week).single();
-  if(existing)return{error:{message:'Already submitted this week.'}};
-  const{error}=await _sb.from('weekly_challenges').insert([{
-    user_id:window._sbUser.id,user_name:window._sbUser.name,challenge_week,challenge_type,total_score,percent
-  }]);
-  return{error};
+  const{data:ex}=await sbFetch('weekly_challenges?select=id&user_id=eq.'+window._sbUser.id+'&challenge_week=eq.'+encodeURIComponent(challenge_week));
+  if(ex&&Array.isArray(ex)&&ex.length>0)return{error:{message:'Already submitted this week.'}};
+  return sbInsert('weekly_challenges',{user_id:window._sbUser.id,user_name:window._sbUser.name,challenge_week,challenge_type,total_score,percent});
 }
 async function sbGetLeaderboard(type){
-  // type: 'daily'|'weekly'|'alltime'
   if(type==='daily'){
     const today=new Date().toISOString().split('T')[0];
-    const{data}=await _sb.from('daily_scores').select('user_name,score,total,percent,challenge_date').eq('challenge_date',today).order('percent',{ascending:false}).limit(50);
-    return data||[];
+    const{data}=await sbFetch('daily_scores?select=user_name,score,total,percent,challenge_date&challenge_date=eq.'+today+'&order=percent.desc&limit=50');
+    return Array.isArray(data)?data:[];
   }
   if(type==='weekly'){
     const week=getWeekKey();
-    const{data}=await _sb.from('weekly_challenges').select('user_name,total_score,percent,challenge_week').eq('challenge_week',week).order('percent',{ascending:false}).limit(50);
-    return data||[];
+    const{data}=await sbFetch('weekly_challenges?select=user_name,total_score,percent,challenge_week&challenge_week=eq.'+encodeURIComponent(week)+'&order=percent.desc&limit=50');
+    return Array.isArray(data)?data:[];
   }
-  // alltime — use jamb_attempts total
-  const{data}=await _sb.from('jamb_attempts').select('user_name,total_score,aggregate_400,created_at').order('aggregate_400',{ascending:false}).limit(50);
-  return data||[];
+  const{data}=await sbFetch('jamb_attempts?select=user_name,total_score,aggregate_400,created_at&order=aggregate_400.desc&limit=50');
+  return Array.isArray(data)?data:[];
 }
 
 // Session persistence
@@ -4152,17 +4180,27 @@ async function renderOnlineLeaderboard(){
 
 async function _ensureAdminAccount(){
   try{
-    // Try to upsert admin — on conflict (email) do nothing
-    await _sb.from('users').upsert([{
-      name:'Ogonor Prince Bright',
-      email:'ogonorprincebright@gmail.com',
-      phone:'09068491316',
-      password_hash:'090684913162008',
-      is_admin:true
-    }],{onConflict:'email',ignoreDuplicates:true});
+    // Check if admin exists first
+    const{data:existing}=await sbFetch('users?select=id&email=eq.ogonorprincebright%40gmail.com');
+    if(existing&&Array.isArray(existing)&&existing.length>0){
+      // Already exists — no action needed
+      return;
+    }
+    // Insert admin account
+    await sbFetch('users',{
+      method:'POST',
+      prefer:'return=minimal',
+      headers:{'Prefer':'return=minimal'},
+      body:{
+        name:'Ogonor Prince Bright',
+        email:'ogonorprincebright@gmail.com',
+        phone:'09068491316',
+        password_hash:'090684913162008',
+        is_admin:true
+      }
+    });
   }catch(e){
-    // Silent fail — admin might already exist
-    console.log('Admin upsert skipped:',e.message);
+    console.log('Admin setup note:',e&&e.message);
   }
 }
 </script>
