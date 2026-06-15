@@ -1,0 +1,15 @@
+{
+  "name": "rsu-cbt-app",
+  "version": "1.0.0",
+  "description": "RSU & JAMB CBT Practice App",
+  "main": "index.html",
+  "scripts": {
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "keywords": ["education", "cbt", "quiz"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@vercel/speed-insights": "^1.0.12"
+  }
+}
